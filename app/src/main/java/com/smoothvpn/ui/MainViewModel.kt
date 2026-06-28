@@ -39,24 +39,38 @@ class MainViewModel : ViewModel() {
     fun setDomesticDirect(v: Boolean) { settings.domesticDirect = v; _settings.value = readSettings() }
 
     enum class SortMode { DEFAULT, PING }
-    private val _sortMode = MutableStateFlow(SortMode.DEFAULT)
+    private val _sortMode = MutableStateFlow(
+        if (settings.sortByPing) SortMode.PING else SortMode.DEFAULT
+    )
     val sortMode: StateFlow<SortMode> = _sortMode.asStateFlow()
     fun toggleSort() {
-        _sortMode.value = if (_sortMode.value == SortMode.PING) SortMode.DEFAULT else SortMode.PING
+        val next = if (_sortMode.value == SortMode.PING) SortMode.DEFAULT else SortMode.PING
+        _sortMode.value = next
+        settings.sortByPing = next == SortMode.PING   // persist across restarts
     }
 
+    // selection is declared here so the profiles flow can pin it to the top
+    private val _selectedId = MutableStateFlow<String?>(null)
+    val selectedId: StateFlow<String?> = _selectedId.asStateFlow()
+
     val profiles: StateFlow<List<Profile>> =
-        combine(repo.profiles, _sortMode) { list, mode ->
-            if (mode == SortMode.PING)
-                list.sortedBy { if (it.latencyMs < 0) Int.MAX_VALUE else it.latencyMs }
-            else list
+        combine(repo.profiles, _sortMode, _selectedId) { list, mode, selId ->
+            val sorted =
+                if (mode == SortMode.PING)
+                    list.sortedBy { if (it.latencyMs < 0) Int.MAX_VALUE else it.latencyMs }
+                else list
+            // float the selected server to the top so it's always first
+            val idx = sorted.indexOfFirst { it.id == selId }
+            if (idx > 0) {
+                ArrayList<Profile>(sorted.size).apply {
+                    add(sorted[idx])
+                    addAll(sorted.filterIndexed { i, _ -> i != idx })
+                }
+            } else sorted
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val subscriptions: StateFlow<List<SubscriptionEntity>> =
         repo.subscriptions.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-
-    private val _selectedId = MutableStateFlow<String?>(null)
-    val selectedId: StateFlow<String?> = _selectedId.asStateFlow()
 
     private val _busy = MutableStateFlow(false)
     val busy: StateFlow<Boolean> = _busy.asStateFlow()

@@ -20,6 +20,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -208,7 +211,15 @@ private fun HomeScreen(vm: MainViewModel) {
             if (profiles.isEmpty()) {
                 EmptyState()
             } else {
-                LazyColumn(Modifier.fillMaxSize()) {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    // clear the FAB + the gesture / navigation-bar inset so the
+                    // last config can scroll up into a comfortable tap zone
+                    contentPadding = PaddingValues(
+                        bottom = 96.dp +
+                            WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+                    )
+                ) {
                     items(profiles, key = { it.id }) { p ->
                         ServerRow(
                             profile = p,
@@ -217,7 +228,6 @@ private fun HomeScreen(vm: MainViewModel) {
                             onDelete = { vm.delete(p) }
                         )
                     }
-                    item { Spacer(Modifier.height(80.dp)) }
                 }
             }
         }
