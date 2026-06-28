@@ -29,6 +29,10 @@ class SettingsStore(context: Context) {
         get() = prefs.getString(KEY_LAST, null)
         set(v) = prefs.edit().putString(KEY_LAST, v).apply()
 
+    var sortByPing: Boolean
+        get() = prefs.getBoolean(KEY_SORT, false)
+        set(v) = prefs.edit().putBoolean(KEY_SORT, v).apply()
+
     fun toRoutingOptions(geoAvailable: Boolean) = RoutingOptions(
         enableMux = enableMux,
         bypassLan = bypassLan,
@@ -43,5 +47,6 @@ class SettingsStore(context: Context) {
         private const val KEY_ADS = "block_ads"
         private const val KEY_DOMESTIC = "domestic_direct"
         private const val KEY_LAST = "last_profile"
+        private const val KEY_SORT = "sort_by_ping"
     }
 }
