@@ -7,6 +7,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
+import android.net.TrafficStats
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
@@ -33,9 +34,9 @@ import libv2ray.Libv2ray
  *
  *   TUN fd  ──▶  hev-socks5-tunnel  ──▶  127.0.0.1:10808 (Xray SOCKS)  ──▶  proxy
  *
- * Adds TLS fragmentation (anti-DPI) and auto health-check + failover: the active
- * server is probed through the proxy, and if it dies the service silently brings
- * up the fastest reachable server in the list.
+ * Adds TLS fragmentation (anti-DPI), auto health-check + failover, per-app
+ * split tunnelling and a live throughput sampler. All behaviour is read from
+ * [SettingsStore] so the Settings screen drives the engine directly.
  */
 class XrayVpnService : VpnService() {
 
@@ -44,9 +45,6 @@ class XrayVpnService : VpnService() {
         const val ACTION_START = "com.smoothvpn.START"
         const val ACTION_STOP = "com.smoothvpn.STOP"
         const val EXTRA_PROFILE_ID = "profile_id"
-
-        // Anti-DPI TLS fragmentation. Flip to false if a specific server ever stops working.
-        private const val ENABLE_FRAGMENTATION = true
 
         // Auto health-check + failover.
         private const val ENABLE_AUTO_FAILOVER = true
@@ -68,6 +66,10 @@ class XrayVpnService : VpnService() {
         @Volatile var connectedSince: Long = 0L
         @Volatile var lastError: String = ""
 
+        // Live throughput (bits / second), sampled once a second while connected.
+        @Volatile var downlinkBps: Long = 0L
+        @Volatile var uplinkBps: Long = 0L
+
         // True for the demo flavor that has no native engine.
         val isMock: Boolean get() = com.smoothvpn.BuildConfig.MOCK_ENGINE
     }
@@ -82,6 +84,7 @@ class XrayVpnService : VpnService() {
     @Volatile private var currentProfileId: String? = null
     @Volatile private var switching: Boolean = false
     private var monitorJob: Job? = null
+    private var speedJob: Job? = null
 
     // libv2ray talks back through this 3-method callback.
     private inner class Callback : CoreCallbackHandler {
@@ -124,11 +127,13 @@ class XrayVpnService : VpnService() {
             activeRemark = "${profile.remark}  (demo — no tunnel)"
             currentProfileId = profile.id
             connectedSince = System.currentTimeMillis()
+            startSpeedSampler()
             Log.i(TAG, "mock connect: ${profile.remark}")
             return
         }
 
         if (!bringUp(profile)) { stopVpn(); return }
+        startSpeedSampler()
         if (ENABLE_AUTO_FAILOVER) startMonitor()
     }
 
@@ -176,7 +181,7 @@ class XrayVpnService : VpnService() {
 
     /** Rewrites the config to fragment the TLS ClientHello (defeats most SNI/DPI blocking). */
     private fun maybeFragment(rawConfig: String): String {
-        if (!ENABLE_FRAGMENTATION) return rawConfig
+        if (!settings.fragmentation) return rawConfig
         return try {
             FragmentOutbound.apply(JSONObject(rawConfig), FragmentOutbound.Options()).toString()
         } catch (e: Exception) {
@@ -196,9 +201,11 @@ class XrayVpnService : VpnService() {
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) builder.setMetered(false)
 
-        try { builder.addDisallowedApplication(packageName) } catch (_: Exception) {}
+        applyPerApp(builder)
 
-        runCatching { builder.addAddress(PRIVATE_VLAN6_CLIENT, 126).addRoute("::", 0) }
+        if (settings.ipv6) {
+            runCatching { builder.addAddress(PRIVATE_VLAN6_CLIENT, 126).addRoute("::", 0) }
+        }
 
         builder.setConfigureIntent(
             PendingIntent.getActivity(
@@ -209,6 +216,53 @@ class XrayVpnService : VpnService() {
 
         tunFd = builder.establish()
         return tunFd != null
+    }
+
+    /**
+     * Split tunnelling.
+     *  - allow    : only the listed apps are routed through the VPN.
+     *  - disallow : the listed apps bypass the VPN; everything else is tunnelled.
+     *  - off      : everything is tunnelled.
+     * Our own package always bypasses the tunnel so the engine's own sockets
+     * don't loop back into the TUN.
+     */
+    private fun applyPerApp(builder: Builder) {
+        val mode = settings.perAppMode
+        val pkgs = settings.perAppPackages
+
+        if (mode == SettingsStore.MODE_ALLOW && pkgs.isNotEmpty()) {
+            // allow-list: self is implicitly excluded (we never add it), so it bypasses.
+            for (pkg in pkgs) runCatching { builder.addAllowedApplication(pkg) }
+            return
+        }
+
+        // off, or disallow: always exclude self, then exclude the user's list.
+        runCatching { builder.addDisallowedApplication(packageName) }
+        if (mode == SettingsStore.MODE_DISALLOW) {
+            for (pkg in pkgs) runCatching { builder.addDisallowedApplication(pkg) }
+        }
+    }
+
+    // ---- live speed ---------------------------------------------------------
+
+    private fun startSpeedSampler() {
+        speedJob?.cancel()
+        speedJob = scope.launch {
+            var lastRx = TrafficStats.getTotalRxBytes().coerceAtLeast(0)
+            var lastTx = TrafficStats.getTotalTxBytes().coerceAtLeast(0)
+            var lastT = System.nanoTime()
+            while (isActive) {
+                delay(1000)
+                val rx = TrafficStats.getTotalRxBytes()
+                val tx = TrafficStats.getTotalTxBytes()
+                val now = System.nanoTime()
+                if (rx < 0 || tx < 0) { downlinkBps = 0; uplinkBps = 0; continue }
+                val secs = ((now - lastT).coerceAtLeast(1)) / 1_000_000_000.0
+                downlinkBps = (((rx - lastRx).coerceAtLeast(0)) * 8 / secs).toLong()
+                uplinkBps = (((tx - lastTx).coerceAtLeast(0)) * 8 / secs).toLong()
+                lastRx = rx; lastTx = tx; lastT = now
+            }
+        }
     }
 
     // ---- auto failover ------------------------------------------------------
@@ -287,11 +341,14 @@ class XrayVpnService : VpnService() {
 
     private fun stopVpn() {
         monitorJob?.cancel(); monitorJob = null
+        speedJob?.cancel(); speedJob = null
         switching = false
         currentProfileId = null
         isRunning = false
         activeRemark = ""
         connectedSince = 0L
+        downlinkBps = 0L
+        uplinkBps = 0L
         runCatching { tproxy?.stop() }; tproxy = null
         runCatching { if (controller?.isRunning == true) controller?.stopLoop() }
         controller = null
