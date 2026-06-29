@@ -295,45 +295,49 @@ private fun SettingRow(label: String, checked: Boolean, onChange: (Boolean) -> U
 
 @Composable
 private fun ConnectButton(connected: Boolean, remark: String, busy: Boolean, onClick: () -> Unit) {
-    val ring = rememberInfiniteTransition(label = "ring")
-    val spin by ring.animateFloat(
+    val t = rememberInfiniteTransition(label = "orb")
+    val spin by t.animateFloat(
         initialValue = 0f, targetValue = 360f,
         animationSpec = infiniteRepeatable(
             tween(if (connected) 4500 else 9000, easing = LinearEasing), RepeatMode.Restart
         ), label = "spin"
     )
-    val breathe by ring.animateFloat(
-        initialValue = 0.97f, targetValue = if (connected) 1.06f else 1.0f,
+    val breathe by t.animateFloat(
+        initialValue = 0.97f, targetValue = if (connected) 1.05f else 1f,
         animationSpec = infiniteRepeatable(tween(1700), RepeatMode.Reverse), label = "breathe"
     )
     Column(
         Modifier.fillMaxWidth().padding(top = 28.dp, bottom = 18.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Box(contentAlignment = Alignment.Center, modifier = Modifier.size(224.dp)) {
-            // soft glow halo
+        Box(contentAlignment = Alignment.Center, modifier = Modifier.size(232.dp)) {
+            // soft glow
+            Canvas(Modifier.size(232.dp).scale(if (connected) breathe else 1f)) {
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        listOf(Accent.copy(alpha = if (connected) 0.28f else 0.10f), Color.Transparent)
+                    ),
+                    radius = size.minDimension / 2f
+                )
+            }
+            // rotating gradient ring with a gap at the bottom
+            Canvas(Modifier.size(196.dp).rotate(spin)) {
+                drawArc(
+                    brush = Brush.sweepGradient(listOf(Accent, AccentDeep, Color(0xFF8B5CF6), Accent)),
+                    startAngle = 130f, sweepAngle = 280f, useCenter = false,
+                    style = Stroke(width = 11.dp.toPx(), cap = StrokeCap.Round),
+                    alpha = if (connected) 1f else 0.6f
+                )
+            }
+            // core sphere
             Box(
-                Modifier.size(212.dp).scale(if (connected) breathe else 1f)
-                    .clip(CircleShape)
-                    .background(Accent.copy(alpha = if (connected) 0.14f else 0.05f))
-            )
-            // rotating gradient ring (teal -> indigo -> violet)
-            Box(
-                Modifier.size(190.dp).rotate(spin).clip(CircleShape)
+                Modifier.size(150.dp).scale(if (connected) breathe else 1f).clip(CircleShape)
                     .background(
-                        Brush.sweepGradient(
-                            listOf(Accent, AccentDeep, Color(0xFF8B5CF6), Accent)
+                        if (connected) Brush.radialGradient(
+                            listOf(Color(0xFF5FF3D0), Accent, Color(0xFF0B5E50))
+                        ) else Brush.radialGradient(
+                            listOf(Color(0xFF243039), Color(0xFF151B21))
                         )
-                    )
-            )
-            // dark cutout to leave just the ring
-            Box(Modifier.size(168.dp).clip(CircleShape).background(BgBottom))
-            // core button
-            Box(
-                Modifier.size(134.dp).scale(if (connected) breathe else 1f).clip(CircleShape)
-                    .background(
-                        if (connected) Brush.verticalGradient(listOf(Accent, AccentDeep))
-                        else Brush.verticalGradient(listOf(Color(0xFF20272E), Color(0xFF151B21)))
                     )
                     .clickable(enabled = !busy) { onClick() },
                 contentAlignment = Alignment.Center
@@ -341,35 +345,27 @@ private fun ConnectButton(connected: Boolean, remark: String, busy: Boolean, onC
                 if (busy) {
                     CircularProgressIndicator(color = Color.White, strokeWidth = 2.dp)
                 } else {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(
-                            "S", fontSize = 40.sp, fontWeight = FontWeight.Bold,
-                            color = if (connected) Color(0xFF04231E) else Accent
-                        )
-                        Text(
-                            if (connected) "ON" else "OFF",
-                            fontSize = 13.sp, fontWeight = FontWeight.Bold,
-                            color = if (connected) Color(0xFF04231E) else Color(0xFF8A97A3)
-                        )
-                    }
+                    Text(
+                        "S", fontSize = 64.sp, fontWeight = FontWeight.Black,
+                        color = if (connected) Color(0xFF06231D) else Accent
+                    )
                 }
             }
         }
         Spacer(Modifier.height(18.dp))
         Text(
-            if (connected) "Protected" else "Tap to connect",
-            fontWeight = FontWeight.Bold, fontSize = 18.sp,
+            if (connected) "Connected" else "Tap to connect",
+            fontWeight = FontWeight.Bold, fontSize = 20.sp,
             color = if (connected) Accent else MaterialTheme.colorScheme.onBackground
         )
         Spacer(Modifier.height(3.dp))
         Text(
-            remark, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.55f),
+            if (connected) "Your connection is protected" else remark,
+            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.55f),
             maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 13.sp
         )
     }
 }
-
-@Composable
 private fun ServerRow(profile: Profile, selected: Boolean, onClick: () -> Unit, onDelete: () -> Unit) {
     Card(
         Modifier.fillMaxWidth().padding(vertical = 5.dp)
