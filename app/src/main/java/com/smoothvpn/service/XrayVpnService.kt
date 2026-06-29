@@ -66,6 +66,7 @@ class XrayVpnService : VpnService() {
             private set
         @Volatile var activeRemark: String = ""
         @Volatile var connectedSince: Long = 0L
+        @Volatile var lastError: String = ""
 
         // True for the demo flavor that has no native engine.
         val isMock: Boolean get() = com.smoothvpn.BuildConfig.MOCK_ENGINE
@@ -99,7 +100,7 @@ class XrayVpnService : VpnService() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_STOP -> { stopVpn(); return START_NOT_STICKY }
+            ACTION_STOP -> { lastError = ""; stopVpn(); return START_NOT_STICKY }
             else -> {
                 val profileId = intent?.getStringExtra(EXTRA_PROFILE_ID)
                 if (profileId == null) { stopSelf(); return START_NOT_STICKY }
@@ -139,15 +140,15 @@ class XrayVpnService : VpnService() {
         val rawConfig = XrayConfigBuilder.build(profile, settings.toRoutingOptions(geoOk))
         val config = maybeFragment(rawConfig)
 
-        if (!establishTun()) return false
-        val fd = tunFd?.fd ?: return false
+        if (!establishTun()) { lastError = "Couldn't create the VPN interface"; return false }
+        val fd = tunFd?.fd ?: run { lastError = "VPN interface unavailable"; return false }
 
         val ctrl = Libv2ray.newCoreController(Callback())
         controller = ctrl
         try {
             ctrl.startLoop(config, 0)   // 0 = SOCKS-only; hev bridges the TUN below
         } catch (e: Exception) {
-            Log.e(TAG, "core startLoop failed", e); return false
+            Log.e(TAG, "core startLoop failed", e); lastError = e.message ?: "core start failed"; return false
         }
 
         try {
@@ -161,10 +162,11 @@ class XrayVpnService : VpnService() {
             bridge.start()
             tproxy = bridge
         } catch (t: Throwable) {
-            Log.e(TAG, "tun2socks bridge failed", t); return false
+            Log.e(TAG, "tun2socks bridge failed", t); lastError = t.message ?: "tunnel bridge failed"; return false
         }
 
         isRunning = true
+        lastError = ""
         activeRemark = profile.remark
         currentProfileId = profile.id
         connectedSince = System.currentTimeMillis()
