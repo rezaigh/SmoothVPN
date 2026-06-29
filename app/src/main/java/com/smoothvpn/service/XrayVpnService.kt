@@ -1,5 +1,7 @@
 package com.smoothvpn.service
 
+import com.smoothvpn.core.FragmentOutbound
+import org.json.JSONObject
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -42,6 +44,8 @@ class XrayVpnService : VpnService() {
         const val ACTION_START = "com.smoothvpn.START"
         const val ACTION_STOP = "com.smoothvpn.STOP"
         const val EXTRA_PROFILE_ID = "profile_id"
+        // Anti-DPI TLS fragmentation. Flip to false if a specific server ever stops working.
+        private const val ENABLE_FRAGMENTATION = true
 
         private const val VPN_MTU = 1500
         private const val PRIVATE_VLAN4_CLIENT = "172.19.0.1"
@@ -113,7 +117,8 @@ class XrayVpnService : VpnService() {
         val geoOk = GeoAssets.ensure(applicationContext)
         Libv2ray.initCoreEnv(GeoAssets.assetDir(applicationContext), "")
 
-        val config = XrayConfigBuilder.build(profile, settings.toRoutingOptions(geoOk))
+        val rawConfig = XrayConfigBuilder.build(profile, settings.toRoutingOptions(geoOk))
+        val config = maybeFragment(rawConfig)
 
         if (!establishTun()) { stopVpn(); return }
         val fd = tunFd?.fd ?: run { stopVpn(); return }
@@ -148,7 +153,16 @@ class XrayVpnService : VpnService() {
         connectedSince = System.currentTimeMillis()
         Log.i(TAG, "VPN up: ${profile.remark}")
     }
-
+    /** Rewrites the config to fragment the TLS ClientHello (defeats most SNI/DPI blocking). */
+    private fun maybeFragment(rawConfig: String): String {
+        if (!ENABLE_FRAGMENTATION) return rawConfig
+        return try {
+            FragmentOutbound.apply(JSONObject(rawConfig), FragmentOutbound.Options()).toString()
+        } catch (e: Exception) {
+            Log.w(TAG, "fragmentation skipped: ${e.message}")
+            rawConfig
+        }
+    }
     private fun establishTun(): Boolean {
         val builder = Builder()
             .setSession("SmoothVPN")
