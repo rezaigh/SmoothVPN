@@ -292,40 +292,45 @@ private fun SettingRow(label: String, checked: Boolean, onChange: (Boolean) -> U
 
 @Composable
 private fun ConnectButton(connected: Boolean, remark: String, busy: Boolean, onClick: () -> Unit) {
-    val core by animateColorAsState(
-        if (connected) Accent else Color(0xFF2A333C), label = "core"
+    val ring = rememberInfiniteTransition(label = "ring")
+    val spin by ring.animateFloat(
+        initialValue = 0f, targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            tween(if (connected) 4500 else 9000, easing = LinearEasing), RepeatMode.Restart
+        ), label = "spin"
     )
-    val pulse = rememberInfiniteTransition(label = "pulse")
-    val glow by pulse.animateFloat(
-        initialValue = 0.96f, targetValue = 1.10f,
-        animationSpec = infiniteRepeatable(tween(1600), RepeatMode.Reverse), label = "glow"
+    val breathe by ring.animateFloat(
+        initialValue = 0.97f, targetValue = if (connected) 1.06f else 1.0f,
+        animationSpec = infiniteRepeatable(tween(1700), RepeatMode.Reverse), label = "breathe"
     )
     Column(
         Modifier.fillMaxWidth().padding(top = 28.dp, bottom = 18.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Box(contentAlignment = Alignment.Center, modifier = Modifier.size(224.dp)) {
-            // outer glow halo — gently pulses when connected
+            // soft glow halo
             Box(
-                Modifier.size(212.dp)
-                    .scale(if (connected) glow else 1f)
+                Modifier.size(212.dp).scale(if (connected) breathe else 1f)
                     .clip(CircleShape)
-                    .background(core.copy(alpha = if (connected) 0.16f else 0.05f))
+                    .background(Accent.copy(alpha = if (connected) 0.14f else 0.05f))
             )
-            // mid ring
+            // rotating gradient ring (teal -> indigo -> violet)
             Box(
-                Modifier.size(170.dp).clip(CircleShape)
-                    .background(core.copy(alpha = if (connected) 0.20f else 0.09f))
-                    .border(1.dp, core.copy(alpha = 0.35f), CircleShape)
-            )
-            // core button with emerald gradient
-            Box(
-                Modifier.size(134.dp).clip(CircleShape)
+                Modifier.size(190.dp).rotate(spin).clip(CircleShape)
                     .background(
-                        if (connected)
-                            Brush.verticalGradient(listOf(Color(0xFF4CEBAB), AccentDeep))
-                        else
-                            Brush.verticalGradient(listOf(Color(0xFF20272E), Color(0xFF151B21)))
+                        Brush.sweepGradient(
+                            listOf(Accent, AccentDeep, Color(0xFF8B5CF6), Accent)
+                        )
+                    )
+            )
+            // dark cutout to leave just the ring
+            Box(Modifier.size(168.dp).clip(CircleShape).background(BgBottom))
+            // core button
+            Box(
+                Modifier.size(134.dp).scale(if (connected) breathe else 1f).clip(CircleShape)
+                    .background(
+                        if (connected) Brush.verticalGradient(listOf(Accent, AccentDeep))
+                        else Brush.verticalGradient(listOf(Color(0xFF20272E), Color(0xFF151B21)))
                     )
                     .clickable(enabled = !busy) { onClick() },
                 contentAlignment = Alignment.Center
@@ -334,11 +339,15 @@ private fun ConnectButton(connected: Boolean, remark: String, busy: Boolean, onC
                     CircularProgressIndicator(color = Color.White, strokeWidth = 2.dp)
                 } else {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("∿", fontSize = 32.sp, fontWeight = FontWeight.Bold,
-                            color = if (connected) Color(0xFF05231A) else Accent)
-                        Text(if (connected) "ON" else "OFF",
-                            fontSize = 15.sp, fontWeight = FontWeight.Bold,
-                            color = if (connected) Color(0xFF05231A) else Color(0xFF8A97A3))
+                        Text(
+                            "S", fontSize = 40.sp, fontWeight = FontWeight.Bold,
+                            color = if (connected) Color(0xFF04231E) else Accent
+                        )
+                        Text(
+                            if (connected) "ON" else "OFF",
+                            fontSize = 13.sp, fontWeight = FontWeight.Bold,
+                            color = if (connected) Color(0xFF04231E) else Color(0xFF8A97A3)
+                        )
                     }
                 }
             }
@@ -350,8 +359,10 @@ private fun ConnectButton(connected: Boolean, remark: String, busy: Boolean, onC
             color = if (connected) Accent else MaterialTheme.colorScheme.onBackground
         )
         Spacer(Modifier.height(3.dp))
-        Text(remark, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.55f),
-            maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 13.sp)
+        Text(
+            remark, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.55f),
+            maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 13.sp
+        )
     }
 }
 
