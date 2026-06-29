@@ -10,6 +10,7 @@ package com.smoothvpn.core
  */
 data class RoutingOptions(
     val enableMux: Boolean = true,
+    val muxConcurrency: Int = 8,
     val bypassLan: Boolean = true,
     val blockAds: Boolean = false,
     val domesticDirect: Boolean = false,

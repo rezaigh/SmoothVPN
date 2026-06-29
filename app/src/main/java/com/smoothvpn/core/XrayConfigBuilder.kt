@@ -28,7 +28,7 @@ object XrayConfigBuilder {
         root.put("log", JSONObject().put("loglevel", "warning"))
         root.put("dns", buildDns())
         root.put("inbounds", buildInbounds())
-        root.put("outbounds", buildOutbounds(p, options.enableMux))
+        root.put("outbounds", buildOutbounds(p, options))
         root.put("routing", buildRouting(options))
 
         return root.toString(2)
@@ -62,21 +62,21 @@ object XrayConfigBuilder {
 
     // ---- outbounds ----------------------------------------------------------
 
-    private fun buildOutbounds(p: Profile, enableMux: Boolean): JSONArray {
+    private fun buildOutbounds(p: Profile, options: RoutingOptions): JSONArray {
         val proxy = JSONObject()
             .put("tag", "proxy")
             .put("protocol", p.protocol.tag)
             .put("settings", buildProxySettings(p))
             .put("streamSettings", buildStreamSettings(p))
 
-        if (enableMux && p.protocol != Protocol.SHADOWSOCKS) {
+        if (options.enableMux && p.protocol != Protocol.SHADOWSOCKS) {
             // Mux multiplexes many requests over one connection -> less handshake
             // overhead and snappier page loads. Disabled for SS (no benefit / xudp).
             proxy.put(
                 "mux",
                 JSONObject()
                     .put("enabled", true)
-                    .put("concurrency", 8)
+                    .put("concurrency", options.muxConcurrency)
                     .put("xudpConcurrency", 16)
                     .put("xudpProxyUDP443", "reject")
             )
