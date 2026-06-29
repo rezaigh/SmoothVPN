@@ -19,7 +19,11 @@ import com.smoothvpn.data.SettingsStore
 import com.smoothvpn.ui.MainActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.first
 import libv2ray.CoreCallbackHandler
 import libv2ray.CoreController
 import libv2ray.Libv2ray
@@ -29,13 +33,9 @@ import libv2ray.Libv2ray
  *
  *   TUN fd  ──▶  hev-socks5-tunnel  ──▶  127.0.0.1:10808 (Xray SOCKS)  ──▶  proxy
  *
- * The core runs SOCKS-only (startLoop config, 0) and hev-socks5-tunnel pumps the
- * TUN device into that SOCKS inbound — the same default design as v2rayNG. We
- * exclude our own app from the tunnel so the core's connection out to the proxy
- * server bypasses the VPN (this replaces the old per-socket protect()).
- *
- * The `full` flavor links the real libv2ray.aar (built in CI). The `mock` flavor
- * links a tiny Kotlin stub exposing the same names, so the UI runs with no engine.
+ * Adds TLS fragmentation (anti-DPI) and auto health-check + failover: the active
+ * server is probed through the proxy, and if it dies the service silently brings
+ * up the fastest reachable server in the list.
  */
 class XrayVpnService : VpnService() {
 
@@ -44,8 +44,16 @@ class XrayVpnService : VpnService() {
         const val ACTION_START = "com.smoothvpn.START"
         const val ACTION_STOP = "com.smoothvpn.STOP"
         const val EXTRA_PROFILE_ID = "profile_id"
+
         // Anti-DPI TLS fragmentation. Flip to false if a specific server ever stops working.
         private const val ENABLE_FRAGMENTATION = true
+
+        // Auto health-check + failover.
+        private const val ENABLE_AUTO_FAILOVER = true
+        private const val CHECK_INTERVAL_MS = 15_000L
+        private const val FAILS_BEFORE_SWITCH = 2
+        private const val PROBE_TIMEOUT_MS = 5_000
+        private const val PROBE_URL = "http://cp.cloudflare.com/generate_204"
 
         private const val VPN_MTU = 1500
         private const val PRIVATE_VLAN4_CLIENT = "172.19.0.1"
@@ -69,6 +77,10 @@ class XrayVpnService : VpnService() {
     private val scope = CoroutineScope(Dispatchers.IO)
     private lateinit var repo: ProfileRepository
     private lateinit var settings: SettingsStore
+
+    @Volatile private var currentProfileId: String? = null
+    @Volatile private var switching: Boolean = false
+    private var monitorJob: Job? = null
 
     // libv2ray talks back through this 3-method callback.
     private inner class Callback : CoreCallbackHandler {
@@ -109,30 +121,35 @@ class XrayVpnService : VpnService() {
         if (isMock) {
             isRunning = true
             activeRemark = "${profile.remark}  (demo — no tunnel)"
+            currentProfileId = profile.id
             connectedSince = System.currentTimeMillis()
             Log.i(TAG, "mock connect: ${profile.remark}")
             return
         }
 
+        if (!bringUp(profile)) { stopVpn(); return }
+        if (ENABLE_AUTO_FAILOVER) startMonitor()
+    }
+
+    /** Brings up the engine for [profile]. Returns false on any failure. */
+    private fun bringUp(profile: Profile): Boolean {
         val geoOk = GeoAssets.ensure(applicationContext)
         Libv2ray.initCoreEnv(GeoAssets.assetDir(applicationContext), "")
 
         val rawConfig = XrayConfigBuilder.build(profile, settings.toRoutingOptions(geoOk))
         val config = maybeFragment(rawConfig)
 
-        if (!establishTun()) { stopVpn(); return }
-        val fd = tunFd?.fd ?: run { stopVpn(); return }
+        if (!establishTun()) return false
+        val fd = tunFd?.fd ?: return false
 
         val ctrl = Libv2ray.newCoreController(Callback())
         controller = ctrl
         try {
             ctrl.startLoop(config, 0)   // 0 = SOCKS-only; hev bridges the TUN below
         } catch (e: Exception) {
-            Log.e(TAG, "core startLoop failed", e)
-            stopVpn(); return
+            Log.e(TAG, "core startLoop failed", e); return false
         }
 
-        // Bridge the TUN device into the core's local SOCKS inbound (hev-socks5-tunnel).
         try {
             val bridge = TProxyService(
                 filesDir = filesDir,
@@ -144,15 +161,17 @@ class XrayVpnService : VpnService() {
             bridge.start()
             tproxy = bridge
         } catch (t: Throwable) {
-            Log.e(TAG, "tun2socks bridge failed", t)
-            stopVpn(); return
+            Log.e(TAG, "tun2socks bridge failed", t); return false
         }
 
         isRunning = true
         activeRemark = profile.remark
+        currentProfileId = profile.id
         connectedSince = System.currentTimeMillis()
         Log.i(TAG, "VPN up: ${profile.remark}")
+        return true
     }
+
     /** Rewrites the config to fragment the TLS ClientHello (defeats most SNI/DPI blocking). */
     private fun maybeFragment(rawConfig: String): String {
         if (!ENABLE_FRAGMENTATION) return rawConfig
@@ -163,6 +182,7 @@ class XrayVpnService : VpnService() {
             rawConfig
         }
     }
+
     private fun establishTun(): Boolean {
         val builder = Builder()
             .setSession("SmoothVPN")
@@ -174,8 +194,6 @@ class XrayVpnService : VpnService() {
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) builder.setMetered(false)
 
-        // Exclude ourselves so the core's outbound to the proxy server goes
-        // OUTSIDE the tunnel (replaces the old per-socket protect()).
         try { builder.addDisallowedApplication(packageName) } catch (_: Exception) {}
 
         runCatching { builder.addAddress(PRIVATE_VLAN6_CLIENT, 126).addRoute("::", 0) }
@@ -191,9 +209,84 @@ class XrayVpnService : VpnService() {
         return tunFd != null
     }
 
+    // ---- auto failover ------------------------------------------------------
+
+    private fun startMonitor() {
+        monitorJob?.cancel()
+        monitorJob = scope.launch {
+            var fails = 0
+            while (isActive) {
+                delay(CHECK_INTERVAL_MS)
+                if (!isRunning || switching) continue
+                if (probeThroughProxy()) { fails = 0; continue }
+                fails++
+                Log.w(TAG, "health probe failed ($fails/$FAILS_BEFORE_SWITCH)")
+                if (fails >= FAILS_BEFORE_SWITCH) { fails = 0; doFailover() }
+            }
+        }
+    }
+
+    /** Quick connectivity check sent THROUGH the proxy's local SOCKS inbound. */
+    private fun probeThroughProxy(): Boolean = try {
+        val proxy = java.net.Proxy(
+            java.net.Proxy.Type.SOCKS,
+            java.net.InetSocketAddress("127.0.0.1", XrayConfigBuilder.SOCKS_PORT)
+        )
+        val conn = (java.net.URL(PROBE_URL).openConnection(proxy) as java.net.HttpURLConnection).apply {
+            connectTimeout = PROBE_TIMEOUT_MS
+            readTimeout = PROBE_TIMEOUT_MS
+            instanceFollowRedirects = false
+            requestMethod = "GET"
+        }
+        val code = conn.responseCode
+        conn.disconnect()
+        code == 204 || code in 200..299
+    } catch (_: Exception) { false }
+
+    private suspend fun doFailover() {
+        switching = true
+        try {
+            val all = repo.profiles.first()
+            val current = currentProfileId
+            val candidates = all.filter { it.id != current }
+            if (candidates.isEmpty()) { Log.w(TAG, "no failover candidates"); return }
+
+            var best: Profile? = null
+            var bestMs = Int.MAX_VALUE
+            for (c in candidates) {
+                val ms = repo.testLatency(c)
+                if (ms in 0 until bestMs) { bestMs = ms; best = c }
+            }
+            val target = best ?: run { Log.w(TAG, "no reachable failover server"); return }
+            switchTo(target)
+        } finally {
+            switching = false
+        }
+    }
+
+    private fun switchTo(profile: Profile) {
+        Log.i(TAG, "failover -> ${profile.remark}")
+        activeRemark = "Switching to ${profile.remark}…"
+        updateNotification(activeRemark)
+        teardownEngine()
+        if (!bringUp(profile)) { stopVpn(); return }
+        updateNotification(profile.remark)
+    }
+
+    /** Tears down core + bridge + tun WITHOUT stopping the service (used for switching). */
+    private fun teardownEngine() {
+        runCatching { tproxy?.stop() }; tproxy = null
+        runCatching { if (controller?.isRunning == true) controller?.stopLoop() }
+        controller = null
+        runCatching { tunFd?.close() }; tunFd = null
+    }
+
     // ---- stop ---------------------------------------------------------------
 
     private fun stopVpn() {
+        monitorJob?.cancel(); monitorJob = null
+        switching = false
+        currentProfileId = null
         isRunning = false
         activeRemark = ""
         connectedSince = 0L
@@ -209,6 +302,13 @@ class XrayVpnService : VpnService() {
     override fun onRevoke() { stopVpn(); super.onRevoke() }
 
     // ---- notification -------------------------------------------------------
+
+    private fun updateNotification(remark: String) {
+        runCatching {
+            getSystemService(NotificationManager::class.java)
+                .notify(NOTIF_ID, buildNotification(remark))
+        }
+    }
 
     private fun buildNotification(remark: String): Notification {
         val nm = getSystemService(NotificationManager::class.java)
