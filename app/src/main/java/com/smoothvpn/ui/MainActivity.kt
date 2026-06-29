@@ -366,6 +366,7 @@ private fun ConnectButton(connected: Boolean, remark: String, busy: Boolean, onC
         )
     }
 }
+@Composable
 private fun ServerRow(profile: Profile, selected: Boolean, onClick: () -> Unit, onDelete: () -> Unit) {
     Card(
         Modifier.fillMaxWidth().padding(vertical = 5.dp)
