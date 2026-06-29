@@ -149,7 +149,7 @@ private fun HomeScreen(vm: MainViewModel) {
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("∿", color = Accent, fontWeight = FontWeight.Bold, fontSize = 22.sp)
+                        Text("s", color = Accent, fontWeight = FontWeight.Bold, fontSize = 22.sp)
                         Spacer(Modifier.width(8.dp))
                         Text("SmoothVPN", fontWeight = FontWeight.Bold)
                     }
