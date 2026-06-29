@@ -49,6 +49,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.smoothvpn.core.Profile
 import com.smoothvpn.service.XrayVpnService
+import com.smoothvpn.diagnostics.ConnectionDiagnostics
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import kotlinx.coroutines.delay
@@ -89,10 +90,12 @@ private fun HomeScreen(vm: MainViewModel) {
     // Poll service state (service runs in its own process).
     var connected by remember { mutableStateOf(XrayVpnService.isRunning) }
     var activeRemark by remember { mutableStateOf(XrayVpnService.activeRemark) }
+    var lastError by remember { mutableStateOf("") }
     LaunchedEffect(Unit) {
         while (true) {
             connected = XrayVpnService.isRunning
             activeRemark = XrayVpnService.activeRemark
+            lastError = XrayVpnService.lastError
             delay(800)
         }
     }
@@ -100,6 +103,13 @@ private fun HomeScreen(vm: MainViewModel) {
     val snackbar = remember { SnackbarHostState() }
     LaunchedEffect(message) {
         message?.let { snackbar.showSnackbar(it.text); vm.consumeMessage() }
+    }
+    LaunchedEffect(lastError) {
+        if (lastError.isNotBlank()) {
+            val d = ConnectionDiagnostics.diagnose(lastError)
+            snackbar.showSnackbar("${d.title} — ${d.suggestion}")
+            XrayVpnService.lastError = ""
+        }
     }
 
     var showSubDialog by remember { mutableStateOf(false) }
