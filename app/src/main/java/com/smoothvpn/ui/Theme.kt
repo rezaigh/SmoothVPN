@@ -5,15 +5,15 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 
-// Brand palette — kept in sync with the launcher icon.
-val Accent = Color(0xFF34E0A1)
-val AccentDeep = Color(0xFF0E8E5F)
-val BgTop = Color(0xFF13261F)   // deep teal (gradient top)
-val BgBottom = Color(0xFF07090C) // near-black (gradient bottom)
+// Brand palette — kept in sync with the launcher icon (teal -> indigo flow).
+val Accent = Color(0xFF2DD4BF)     // teal (icon primary)
+val AccentDeep = Color(0xFF6366F1) // indigo (icon end)
+val BgTop = Color(0xFF0F1A22)      // dark teal-blue (gradient top)
+val BgBottom = Color(0xFF0A0E13)   // near-black (gradient bottom)
 
 private val DarkColors = darkColorScheme(
     primary = Accent,
-    onPrimary = Color(0xFF052015),
+    onPrimary = Color(0xFF04231E),
     secondary = AccentDeep,
     background = BgBottom,
     surface = Color(0xFF141A20),
